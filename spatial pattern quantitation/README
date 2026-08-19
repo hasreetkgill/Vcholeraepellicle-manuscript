@@ -1,0 +1,5 @@
+Scripts for analysis of spatial patterns of cells in pellicles
+1. ClassifyObjectsDistanceDensity_Coculture.m
+Use for red/green coculture images — a paired 488/561 field of view where both channels are genuinely competing populations of interest. It requires a matched 488+561 pair for every input (errors otherwise), classifies each channel's objects independently, and computes green/red small-object density binned by distance to the nearest large object — separately using each color's large objects as the reference surface — so both populations are treated symmetrically.
+2. ClassifyObjectsDistanceDensity_SingleOrPaired.m
+Use for everything else: single-channel images, or paired images where the two channels play asymmetric roles — one fixed "small object" channel (488) and one fixed "large object/reference structure" channel (561) — e.g. spike-in, protein-addition, or WT/ΔmshA monoculture data. It runs on a lone file if no matching pair exists, and additionally excludes small objects that fall entirely inside a large object's footprint (not done in the coculture script).
