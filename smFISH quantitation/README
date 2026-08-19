@@ -1,0 +1,5 @@
+Scripts for analysis of pellicle/planktonic smFISH data
+1. QuantifyPunctaCellsMicrocolonies.m
+Set CELL_MASK_MODE to "Coculture" or "SpikeIn" before running (they use different DAPI/GFP cell-mask combination rules — see the comment block above the toggle). For every condition/replicate/field-of-view, fits smFISH puncta in the 561/640 channels, segments single cells (DAPI+GFP) and microcolonies, assigns each puncta to its enclosing cell/microcolony, and writes per-condition Struct_*.mat/Struct_Micro_*.mat and Data_*.xlsx/DataMicro_*.xlsx, plus QC overlay TIFFs.
+2. PlotSmFISHPunctaDistributions.m
+Reads the Struct_*.mat cell-level files from step 1 (works for output from either CELL_MASK_MODE). Produces, per channel/metric: box, violin, and CDF plots (pooled and per-replicate) split by cell class, FarRed-only threshold-ratio plots, and distance-to-microcolony scatter/binned plots — each with a matching CSV of the plotted values.
