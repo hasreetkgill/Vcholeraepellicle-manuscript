@@ -1,0 +1,12 @@
+Run in the following order:
+
+1. XYCorrection_TimelapseAcquisition.mac (NIS-Elements macro)
+Acquisition: runs the Base/Surface timelapse with bead-based XY drift correction between stages.
+2. Shift_Stack_ManualPlusAutoCorrection.m
+Builds an uncorrected/manual/auto-corrected drift-corrected bead stack from the acquisition's bead snapshots and outputs the total per-frame XY shift table used by later scripts.
+3. ProcessSurfaceTiles_ZDriftStitchCorrection.m
+Per-tile object segmentation, bead-based Z-drift correction, stitching-oscillation correction, and top-Z alignment on the Surface Z-stacks.
+4. Tracking_2D3D_FastOverlays.m
+Tracks objects across time per tile using the MAX projections, builds a local vector-field registration, and matches 2D tracks to 3D objects for calibrated measurements.
+5. AnalyzeTrackingOutput.m
+Batch driver that classifies tracks (Microcolony/Recruited/Transient), generates plots A–Q per experiment, and averages replicate groups.
