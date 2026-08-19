@@ -1,0 +1,11 @@
+Scripts for pellicle quantification from 20X movies taken at high resolution
+Run in the following order:
+1. XYCorrection_MultipointTimelapse.mac + GenerateMultipointMacro_FromXML.py
+Run the Python script first — it reads a multipoints.xml export and this .mac template together to generate a ready-to-run xy20_points.mac. Load that generated macro in NIS-Elements: it acquires the Base/Surface timelapse across every well/position, with bead-based XY drift correction between visits.
+2. SegmentCultureTimelapse.m
+Segments every timepoint's Z-stack per position (fine + coarse thresholds, watershed-split declumping) and extracts the near-surface projection, writing binary mask stacks and per-position measurement CSVs. Run on the cluster (sized to the SLURM allocation); resumable if interrupted.
+Run TrackMate (Fiji) on the Binary/Binary_Watershed/Surface_Binary/Surface_Binary_Watershed stacks from step 2, exporting -tracks.csv/-spots.csv pairs into those same folders.
+3. CompileCultureTracking_SurfaceMiddleSummaries.m
+Compiles the TrackMate output into per-position CSVs, maps 2D tracks onto 3D objects, estimates which Z-slice is the true "surface" at each timepoint, and re-slices every table into matching Surface/Middle summaries.
+4. SummarizeAndPlotCultureData.m
+Requires metadata.xlsx and genotypes.xlsx in the parent folder. Produces replicate-averaged (mean ± SEM) time courses per genotype — including Surface-normalized-to-Middle — per-replicate stack-vs-Z profile plots, and (for coculture data) red-to-green nearest-neighbor distance plots.
