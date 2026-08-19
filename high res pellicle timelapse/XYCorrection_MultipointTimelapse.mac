@@ -1,0 +1,373 @@
+//// XYCorrection_MultipointTimelapse.mac
+
+// Author: Hasreet Gill, Bassler Lab, HHMI/Princeton University
+// Comments added with assistance of Claude (Sonnet 5, Anthropic)
+
+// MAKE SURE MULTIPOINTS ARE 1. BASE 2. SURFACE FOR EACH WELL
+// CHECKLIST: Define multipoints, check binary thresholding, double check multipoints positions,
+// save as multipoints.xml in macros folder, double click python script, load xy20_points macro, run
+
+//// This is a TEMPLATE macro (saved as "xy20.mac"), not a runnable one.
+//// It relies on a companion script, GenerateMultipointMacro_FromXML.py,
+//// to fill in five things this file deliberately leaves missing before
+//// it will compile/run:
+////   - #define NUM_POINTS <n>            (n = number of wells, from the
+////                                         multipoints.xml point count)
+////   - the per-well CentreX_1_MPi/CentreY_1_MPi/CentreX_2_MPi/CentreY_2_MPi
+////     global array pairs (declared right after "global double medianY")
+////   - the literal XpointsB/YpointsB/ZpointsB/XpointsS/YpointsS/ZpointsS
+////     coordinate assignments at "// INSERT_POINTS_HERE"
+////   - one if(m == i){...} block per well after each of:
+////       "// Object detection after shift"
+////       "// Compute median shift"
+////       "// Update pre-shift"
+////       "// First timepoint: just pre-shift"
+//// The Python script finds those exact comment strings, so they must
+//// stay intact/unique in this file for the generator to work. The
+//// generator writes its output to a separate file (xy20_points.mac) --
+//// this template itself is never edited by the script, so the same
+//// template is reused every time the well count/positions change.
+////
+//// Structurally, this generalizes the earlier single/dual-position
+//// XYCorrection acquisition macros to an arbitrary number of wells: an
+//// outer time loop wraps an inner per-well (multipoint) loop, and
+//// because multiple wells share the SAME acquisition loop, each well
+//// needs its own persistent "before" bead snapshot arrays (hence the
+//// per-well _MPi arrays above) rather than the single shared CentreX_1/
+//// CentreY_1 pair those earlier macros used. Two other differences from
+//// those earlier macros: no bead snapshot images are saved here (the
+//// BeadsShift folder/Capture calls are commented out below), and the
+//// stage does not return to a saved "surface" position/refocus after
+//// the Base acquisition -- each well simply proceeds Surface -> Base ->
+//// next well.
+
+#define REPEAT_COUNT 40
+#define MAX_POINTS 80
+#define MAX_PAIRS 1000
+#define MAX_DIST 40
+
+global char basePath[128];
+global double medianX;
+global double medianY;
+
+int main()
+   {
+   // Variables for file structure & saving
+   DWORD dw;
+   WORD year, month, day;
+   char yearStr[8], monthStr[4], dayStr[4];
+   //char folder[128], surfaceDir[160], baseDir[160], shiftDir[160], name[256];
+   char folder[128], surfaceDir[160], baseDir[160], name[256];
+
+   // Per-well stage coordinates (sized by the NUM_POINTS the Python
+   // script injects above) -- ZpointsS is updated in place each visit
+   // (see below), so it also doubles as "this well's last-known Z".
+   double XpointsB[NUM_POINTS];
+   double YpointsB[NUM_POINTS];
+   double ZpointsB[NUM_POINTS];
+   double XpointsS[NUM_POINTS];
+   double YpointsS[NUM_POINTS];
+   double ZpointsS[NUM_POINTS];
+   double tempZ, tempX, tempY;
+   // Per-well bead counts, persisted across timepoints the same way the
+   // per-well CentreX_1_MPi/CentreX_2_MPi arrays are (those are declared
+   // just above, injected after "global double medianY").
+   int numPoints_1[NUM_POINTS], numPoints_2[NUM_POINTS];
+   int n, ncount, m, mcount;
+
+   // INSERT_POINTS_HERE
+   // (Python replaces this line with every XpointsB[i]/YpointsB[i]/
+   // ZpointsB[i]/XpointsS[i]/YpointsS[i]/ZpointsS[i] = ... assignment,
+   // one well per line-group, read from multipoints.xml.)
+
+
+   // Create folder structure
+   dw = Get_Date();
+   year = HIWORD(dw);
+   month = HIBYTE(LOWORD(dw));
+   day = LOBYTE(LOWORD(dw));
+   strcpy(folder, "E:\\Hasreet\\XY Correction\\20X\\");
+   sprintf(yearStr, "%04d", year);
+   strcat(folder, yearStr);
+   sprintf(monthStr, "%02d", month);
+   strcat(folder, monthStr);
+   sprintf(dayStr, "%02d", day);
+   strcat(folder, dayStr);
+   strcat(folder, "\\");  // Add trailing backslash
+   strcpy(basePath, folder);
+   MakeDirectory(basePath);
+   strcpy(surfaceDir, basePath);
+   strcat(surfaceDir, "Surface\\");
+   MakeDirectory(surfaceDir);
+   strcpy(baseDir, basePath);
+   strcat(baseDir, "Base\\");
+   MakeDirectory(baseDir);
+   //strcpy(shiftDir, basePath);
+   //strcat(shiftDir, "BeadsShift\\");
+   //MakeDirectory(shiftDir);
+
+   // Initialize counters
+   ncount = 0;
+   mcount = 0;
+
+   for(n = 0; n < REPEAT_COUNT; n = n + 1)  // Time loop
+      {
+
+      ncount = n + 1;
+
+      for(m = 0; m < NUM_POINTS; m = m + 1) // Multipoint loop -- visits every well once per timepoint
+         {
+
+         mcount = m + 1;
+
+         StgMoveXY(XpointsS[m], YpointsS[m], 0);
+         StgMoveZ(ZpointsS[m], 0);
+         Wait(2);
+
+         // Per-well pre-experiment autofocus/Z-refresh is currently
+         // disabled below (kept here as commented-out alternatives: a
+         // fast 561 autofocus for the first two wells only, vs. just
+         // re-reading Z for the rest) -- the active line just re-reads
+         // the current Z with no autofocus, relying on whatever
+         // autofocus the ND experiment itself runs during acquisition.
+         //if (ncount > 1)
+            //{
+            //if (mcount < 3)
+               //{
+               //ND_LoadExperiment("Focus56120X_NoLaser"); // Autofocus using 561 fast
+               //ND_RunExperiment(1);
+               //StgGetAbsPosZ(&tempZ);
+               //ZpointsS[m] = tempZ;
+               //}
+            //else
+               //{
+               //StgGetAbsPosZ(&tempZ);
+               //ZpointsS[m] = tempZ;
+               //}
+            //}
+
+         StgGetAbsPosZ(&tempZ);
+         ZpointsS[m] = tempZ;
+
+         if(n > 0)
+            {
+            // Object detection after shift
+            // (Python inserts one if(m==i){ numPoints_2[i] = ObjectPositions(CentreX_2_MPi, CentreY_2_MPi); }
+            // block per well here -- detects this well's beads AFTER
+            // whatever drift happened since its last visit, to compare
+            // against that well's own "before" snapshot from last time.)
+
+            // Compute median shift
+            // (Python inserts one if(m==i){ ComputeMedianShift(CentreX_1_MPi, ..., CentreX_2_MPi, ..., numPoints_2[i]); }
+            // block per well here -- computes and applies this well's
+            // median XY correction, exactly as in the single-position
+            // macros' ComputeMedianShift.)
+
+            StgGetPosXY(&tempX, &tempY); // RESET XY
+            XpointsS[m] = tempX;
+            YpointsS[m] = tempY;
+
+            // Update pre-shift
+            // (Python inserts one if(m==i){ numPoints_1[i] = ObjectPositions(CentreX_1_MPi, CentreY_1_MPi); }
+            // block per well here -- takes a fresh "before" bead
+            // snapshot for this well now that its drift has just been
+            // corrected, so the NEXT time this well is visited there's
+            // something current to compare against.)
+
+            }
+         else
+            {
+            // First timepoint: just pre-shift
+            // (Same per-well ObjectPositions snapshot as "Update
+            // pre-shift" above, reused here since on the very first
+            // timepoint there's no prior snapshot to correct against --
+            // this just seeds one for timepoint 2 onward.)
+
+            }
+
+         //if (mcount < 3)
+            //{
+            //ND_LoadExperiment("Vc_20XTimelapse_Surf561"); // Uses Autofocus, Z-stack
+            //ND_RunExperiment(1);
+            //MakeFilename("Surface\\", "Surf_M", mcount, "_", ncount, name);
+            //ImageSaveAs(name, 3, 1);
+            //}
+         //else
+            //{
+            //ND_LoadExperiment("Vc_20XTimelapse_Surf561_WideZ"); // Uses Autofocus, Z-stack
+            //ND_RunExperiment(1);
+            //MakeFilename("Surface\\", "Surf_M", mcount, "_", ncount, name);
+            //ImageSaveAs(name, 3, 1);
+            //}
+
+         // Surface Z-stack for this well/timepoint; saved as
+         // "Surf_M<well>_<timepoint>.nd2" via the two-count MakeFilename
+         // variant below (needed here since filenames must now encode
+         // BOTH the well number and the timepoint number).
+         ND_LoadExperiment("Vc_20XTimelapse_Surf561_WideZ"); // Uses Autofocus, Z-stack
+         ND_RunExperiment(1);
+         MakeFilename("Surface\\", "Surf_M", mcount, "_", ncount, name);
+         ImageSaveAs(name, 3, 1);
+
+         //ND_LoadExperiment("Vc_20XTimelapse_Surf561488_WideZ"); // Uses Autofocus, Z-stack
+         //ND_RunExperiment(1);
+         //MakeFilename("Surface\\", "Surf_M", mcount, "_", ncount, name);
+         //ImageSaveAs(name, 3, 1);
+
+         StgMoveXY(XpointsB[m], YpointsB[m], 0);
+         StgMoveZ(ZpointsB[m], 0);
+         Wait(2);
+
+         //ND_LoadExperiment("Vc_20XTimelapse_Base561488"); // Uses Autofocus, Z-stack
+         //ND_RunExperiment(1);
+         //MakeFilename("Base\\", "Base_M", mcount, "_", ncount, name);
+         //ImageSaveAs(name, 3, 1);
+
+         // Base Z-stack for this well/timepoint, same naming convention.
+         // No return-to-surface/refocus step after this -- the loop just
+         // advances to the next well (or next timepoint).
+         ND_LoadExperiment("Vc_20XTimelapse_Base561"); // Uses Autofocus, Z-stack
+         ND_RunExperiment(1);
+         MakeFilename("Base\\", "Base_M", mcount, "_", ncount, name);
+         ImageSaveAs(name, 3, 1);
+         }
+   }
+
+return 0;
+}
+
+
+//// First function
+// Detects bead candidates in the current field of view on the "20X 1X
+// SoRa 488" configuration and returns their centroids, same role as
+// ObjectPositions in the single-position macros -- but note this
+// version has NO retry-on-too-few-beads logic (the earlier macros
+// re-autofocus and retry once if fewer than 1-2 beads are found; this
+// one just returns whatever it detects on the first pass).
+int ObjectPositions(double *CentreX, double *CentreY)
+   {
+   int numPoints;
+   char buffer[100];
+
+   CloseAllDocuments(2);
+   SelectOptConf("20X 1X SoRa 488");
+   Capture();
+   DefineThresholdIntGa3(120.000000, 1000000000.000000);
+   DefineThresholdRestrictionSizeGa3(1.5000000, 584.980044);
+   DefineThresholdRestrictionCircularityGa3(0.500000, 1.000000);
+   ThresholdGa3(15);
+
+   ResetObjectFeatures();
+   SelectObjectFeature("CentreX");
+   SelectObjectFeature("CentreY");
+   MeasureObjects();
+
+   numPoints = Get_NumObjects(-1, 0);  // Get number of detected objects
+   Get_ObjectFeatureData("CentreX", CentreX, -1, 0);  // Update CentreX in main()
+   Get_ObjectFeatureData("CentreY", CentreY, -1, 0);  // Update CentreY in main()
+
+   sprintf(buffer, "Number of beads: %d", numPoints);
+   Int_CreateTextWindow(buffer, 0, RGB(0,0,128), RGB_WHITE, 100);
+   Wait(2);
+   Int_CloseTextWindow();
+
+   return numPoints;  // Return the number of detected objects
+   }
+
+
+//// Second function
+// Same pairwise-distance median-shift logic as the single-position
+// macros: matches beads within MAX_DIST between two snapshots, moves the
+// stage by the median X/Y displacement, and reports it. Note MAX_PAIRS
+// (1000) here is smaller than MAX_POINTS^2 (80^2 = 6400) -- if a
+// well's bead field is dense enough to produce more than 1000 matched
+// pairs within MAX_DIST, XShifts/YShifts would overflow; worth keeping
+// in mind if MAX_POINTS is ever raised without re-checking this.
+ int ComputeMedianShift(double *CentreX_1, double *CentreY_1, int numPoints_1,
+                        double *CentreX_2, double *CentreY_2, int numPoints_2)
+   {
+   double XShifts[MAX_PAIRS], YShifts[MAX_PAIRS];
+   double dx, dy, distance;
+   int shiftCount, i, j;
+   char buffer[100];
+   shiftCount = 0;  // Ensure initialization
+
+   // Compute pairwise distances and store shifts where distance < MAX_DIST
+   for(i = 0; i < numPoints_1; i = i + 1)
+      {
+      for(j = 0; j < numPoints_2; j = j + 1)
+         {
+         dx = CentreX_1[i] - CentreX_2[j];
+         dy = CentreY_1[i] - CentreY_2[j];
+         distance = sqrt(dx * dx + dy * dy);
+
+         if(distance < MAX_DIST)
+            {
+            XShifts[shiftCount] = dx;
+            YShifts[shiftCount] = dy;
+            shiftCount = shiftCount + 1;
+            }
+         }
+      }
+
+   if(shiftCount > 0)
+      {
+      SortArrayDbl(XShifts, shiftCount);
+      SortArrayDbl(YShifts, shiftCount);
+
+      if(shiftCount % 2 == 0)
+         {
+         medianX = (XShifts[shiftCount / 2 - 1] + XShifts[shiftCount / 2]) / 2.0;
+         medianY = (YShifts[shiftCount / 2 - 1] + YShifts[shiftCount / 2]) / 2.0;
+         }
+      else
+         {
+         medianX = XShifts[shiftCount / 2];
+         medianY = YShifts[shiftCount / 2];
+         }
+      }
+   else
+      {
+      medianX = 0;
+      medianY = 0;
+      }
+
+   // Move stage according to computed shift
+   StgMoveXY(medianX, -medianY, 1);
+
+   sprintf(buffer, "Stage Moved by Median X Shift: %.3f", medianX);
+   Int_CreateTextWindow(buffer, 0, RGB(0,0,128), RGB_WHITE, 100);
+   Wait(1);
+
+   sprintf(buffer, "Stage Moved by Median Y Shift: %.3f", medianY);
+   Int_CreateTextWindow(buffer, 0, RGB(0,0,128), RGB_WHITE, 100);
+   Wait(1);
+   Int_CloseTextWindow();
+
+   return 1;
+   }
+
+//// Third function
+// Two-label/two-count filename builder: basePath + subfolder + label1 +
+// count1 + label2 + count2 + ".nd2" (e.g. "Base_M" + 3 + "_" + 7 ->
+// "Base_M3_7.nd2"). Needed here (vs. the single-count MakeFilename in
+// the earlier single-position macros) because every output filename in
+// this multipoint macro must encode BOTH the well number and the
+// timepoint number.
+int MakeFilename(char *subfolder, char *label1, int count1, char *label2, int count2, char *output)
+{
+   char number[16];
+
+   // Start building the output string
+   strcpy(output, basePath);         // Use global path from Get_Date()
+   strcat(output, subfolder);        // Add subfolder (e.g., "Base\\")
+   strcat(output, label1);           // Add first label (e.g., "Base_M")
+   sprintf(number, "%d", count1);    // Convert count1 to string
+   strcat(output, number);           // Add first number
+   strcat(output, label2);           // Add second label (e.g., "_")
+   sprintf(number, "%d", count2);    // Reuse buffer for second number
+   strcat(output, number);           // Add second number
+   strcat(output, ".nd2");           // Add file extension
+
+   return 1;
+}
