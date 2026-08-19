@@ -1,0 +1,161 @@
+// SegmentAndOverlay_488Timelapse.ijm
+// Author: Hasreet Gill, Bassler Lab, HHMI/Princeton University
+// Commenting performed with assistance from Claude (Sonnet 5, Anthropic)
+
+// Fiji/ImageJ batch macro for a spike-in experiment. For every "*488.tif" file in a
+// chosen folder (skipping any subfolders and any file already starting
+// with "Binary" or "Overlay" -- i.e. this script's own prior outputs, so
+// re-running it on the same folder doesn't reprocess its own results):
+//   1. Enhances contrast, smooths, and background-subtracts the stack,
+//      then thresholds it (Triangle method) into a binary mask.
+//   2. Re-derives that mask via Analyze Particles with a minimum size
+//      cutoff, discarding sub-35-pixel noise blobs the raw threshold
+//      left behind.
+//   3. Relabels the stack's page axis as time (Frames) rather than Z
+//      (Slices) -- a plain multi-page tif opened with no hyperstack
+//      metadata defaults to being read as a Z-stack, so this corrects it
+//      to treat each page as one timepoint of this movie -- then fills
+//      small holes and morphologically closes each frame's mask.
+//   4. Saves that cleaned mask as "Binary_<base>.tif".
+//   5. Builds an "Overlay_<base>.tif": the binary mask's outlines merged
+//      as one channel with the (8-bit-converted) original image as
+//      another, flattened to RGB -- a quick visual QC image showing the
+//      segmentation boundary directly on the source data.
+// <base> is the filename with any "_20X" suffix (and everything after
+// it) stripped, or otherwise just the extension stripped.
+
+// Choose working directory
+inputDir = getDirectory("Choose working directory (folder with *488.tif files)");
+if (inputDir=="") exit("No folder chosen.");
+
+list = getFileList(inputDir);
+setBatchMode(true);  // suppress window redraws/UI updates for speed while batch processing
+
+for (i = 0; i < list.length; i++) {
+
+	name = list[i];
+	if (File.isDirectory(inputDir + name)) continue;
+
+	// Only process files ending with "488.tif" (case-insensitive)
+	lower = toLowerCase(name);
+	if (!endsWith(lower, "488.tif")) continue;
+	// Skip this macro's own previously-generated outputs.
+	if (startsWith(lower, "binary")) continue;
+	if (startsWith(lower, "overlay")) continue;
+
+
+	path = inputDir + name;
+
+	// Open file
+	open(path);
+	title = getTitle();
+
+	// Threshold + mask
+	// Earlier, simpler approach (disabled): threshold the raw image
+	// directly with no preprocessing.
+	//setAutoThreshold("Triangle dark no-reset");
+	//setOption("BlackBackground", false);
+	//run("Convert to Mask", "background=Dark black");
+
+	// Active approach: boost/normalize contrast, denoise, and flatten
+	// uneven background illumination before thresholding, so the
+	// Triangle threshold below sees a cleaner intensity distribution.
+	run("Enhance Contrast...", "saturated=0.35 process_all");
+	run("Smooth", "stack");
+	run("Smooth", "stack");
+	run("Subtract Background...", "rolling=50 stack");
+
+	setAutoThreshold("Triangle dark no-reset");
+	//setThreshold(130, 65535, "raw");  // alternative: fixed absolute threshold instead of Triangle auto-threshold
+	setOption("BlackBackground", false);
+	//run("Convert to Mask", "background=Dark black");  // alternative mask conversion, without recalculating per slice
+	run("Convert to Mask", "method=Triangle background=Dark calculate");
+
+	// Generate mask stack
+	// Drops any particle under 35 px and rebuilds the mask strictly from
+	// what survives -- a size-based noise filter, distinct from (and
+	// applied after) the intensity threshold above.
+	run("Analyze Particles...", "size=35-Infinity show=Masks stack");
+
+	// Close original image
+	selectWindow(title);
+	close();
+
+	// Select mask window
+	maskTitle = "Mask of " + title;
+	if (isOpen(maskTitle)) {
+
+		selectWindow(maskTitle);
+
+		//run("Invert", "stack");
+
+		// Re-order hyperstack
+		// Swaps the Frames and Slices axes: since this stack was opened
+		// with no hyperstack metadata, ImageJ defaulted to treating every
+		// page as a Z-slice -- this recasts those pages as time frames
+		// instead, since each page here is one imaging timepoint.
+		run("Re-order Hyperstack ...",
+		"channels=[Channels (c)] slices=[Frames (t)] frames=[Slices (z)]");
+		run("Fill Holes", "stack");
+		run("Close-", "stack");
+
+		// build output name: Binary_<original filename without extension>.tif
+		// Truncate at "_20X" if that tag is present in this dataset's
+		// filenames; otherwise just drop the extension.
+		cutPos = indexOf(name, "_20X");
+
+		if (cutPos > 0)
+		    base = substring(name, 0, cutPos);
+		else {
+		    dot = lastIndexOf(name, ".");
+		    if (dot > 0) base = substring(name, 0, dot);
+		    else base = name;
+		}
+
+		outPath = inputDir + "Binary_" + base + ".tif";
+		saveAs("Tiff", outPath);
+
+		// ---- NEW: create and save Overlay_ ----
+
+		// Store the current binary window title. The Binary_ file above
+		// was already written to disk before this point, so turning this
+		// in-memory copy into outlines next doesn't affect the saved mask.
+		binTitle = getTitle();
+
+		// Make outlines on the binary
+		run("Outline", "stack");
+
+		// Re-open original image for merge
+		open(path);
+		origTitle = getTitle();
+
+		// Convert original to 8-bit for merge
+		// ScaleConversions rescales the original intensity range into
+		// 0-255 rather than simply clipping, needed since Merge
+		// Channels/RGB Color expect matching 8-bit channels.
+		selectWindow(origTitle);
+		setOption("ScaleConversions", true);
+		run("8-bit");
+
+		// Merge: outlines as C1, original as C4
+		run("Merge Channels...", "c1=[" + binTitle + "] c4=[" + origTitle + "]");
+
+		// Convert merged result to RGB
+		run("RGB Color", "frames keep");
+
+		// Save overlay
+		overlayPath = inputDir + "Overlay_" + base + ".tif";
+		saveAs("Tiff", overlayPath);
+
+		// Close everything created for this file
+		close("*");
+
+		// ---- end NEW ----
+
+	} else {
+            close("*");
+	}
+}
+
+setBatchMode(false);
+print("Done. Saved Binary_* masks in: " + inputDir);
