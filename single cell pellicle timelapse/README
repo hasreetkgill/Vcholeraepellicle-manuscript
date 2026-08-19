@@ -1,5 +1,5 @@
+Scripts for pellicle timelapse imaging at single-cell resolution 
 Run in the following order:
-
 1. XYCorrection_TimelapseAcquisition.mac (NIS-Elements macro)
 Acquisition: runs the Base/Surface timelapse with bead-based XY drift correction between stages.
 2. Shift_Stack_ManualPlusAutoCorrection.m
