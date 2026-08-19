@@ -1,0 +1,9 @@
+Scripts for analysis of spike-in experiment data
+Run in the following order:
+1. SegmentAndOverlay_488Timelapse.ijm (Fiji/ImageJ macro)
+Batch-segments the 488-channel timelapse: contrast/smoothing/background subtraction, Triangle threshold, size-filtered particle mask, and a matching outline+original overlay PNG per file, saved as Binary_*/Overlay_*.
+Run TrackMate (Fiji) on the 561-channel spike-in particle images, exporting *-tracks.csv/*-spots.csv pairs into the same folder.
+2. SegmentSpikeInAttachment.m
+Cluster batch driver: segments each timepoint's 561-channel image into Voronoi-separated colony zones, filters TrackMate tracks down to short/low-motion "attached" particles, assigns each to whichever colony zone it falls inside, and writes per-position Spots/Object summaries plus a dataset-wide ImageSummary_All.xlsx.
+3. SummarizeAndPlotSpikeInData.m
+Filters ImageSummary_All.xlsx by genotype/replicate/date, then produces mean ± SEM line plots (per genotype and per condition) and bar plots at fixed timepoints (per genotype and per condition), each with a matching CSV of the plotted values.
