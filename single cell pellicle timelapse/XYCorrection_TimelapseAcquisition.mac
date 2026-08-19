@@ -1,0 +1,350 @@
+//// XYCorrection_TimelapseAcquisition_488640.mac
+// Author: Hasreet Gill, Bassler Lab, HHMI/Princeton University
+// Comments added with assistance of Claude (Sonnet 5, Anthropic)
+
+// NIS-Elements macro that runs an automated timelapse acquisition loop of
+// paired "Base" (deep, multipoint) and "Surface" 2-channel (488/640)
+// Z-stack experiments, with an automatic bead-based XY drift correction
+// step run before and after EACH of the two big Z-stack acquisitions
+// every cycle.
+//
+// Each cycle (REPEAT_COUNT total):
+//   PART 1 (Base):
+//     - Record the current XYZ stage position ("surface" reference).
+//     - Detect fluorescent bead positions (ObjectPositions) as a
+//       before-snapshot.
+//     - Run the long Base Z-stack/multipoint timelapse experiment
+//       (~10 min), saving it as an .nd2.
+//     - Return the stage to the recorded XYZ, refocus (no-laser
+//       autofocus), then re-detect bead positions as an after-snapshot.
+//     - Compute the median XY displacement between the before/after bead
+//       sets (ComputeMedianShift) and move the stage to correct for it,
+//       so any drift introduced by that acquisition doesn't accumulate
+//       into the next step.
+//   PART 2 (Surface): same before/after bead-correction pattern, wrapped
+//     around the Surface Z-stack timelapse experiment instead.
+//
+// Every bead snapshot and shift-corrected image is also saved (as
+// "Shift_..." files) so the correction can be reviewed/re-derived
+// afterward -- see the "BeadsShift" subfolder below.
+//
+// Output is written under J:\Hasreet\XY Correction\<YYYYMMDD>\, in three
+// subfolders: Base\, Surface\, and BeadsShift\ (bead snapshots).
+
+#define REPEAT_COUNT 60      // number of Base+Surface cycles to run
+#define MAX_POINTS 50        // max beads trackable per snapshot (CentreX/Y array size)
+#define MAX_PAIRS 2500       // max before/after bead pairs considered (MAX_POINTS^2 worst case)
+#define MAX_DIST 40          // max pixel distance for two beads to be treated as the same bead between snapshots
+global double medianX;       // last computed median X shift, set by ComputeMedianShift
+global double medianY;       // last computed median Y shift, set by ComputeMedianShift
+global char basePath[128];   // today's date-stamped output folder, set once in main() and used by MakeFilename
+
+int main()
+   {
+   // Variables for file structure & saving
+   DWORD dw;
+   WORD year, month, day;
+   char yearStr[8], monthStr[4], dayStr[4];
+   char folder[128];
+   char surfaceDir[160];
+   char baseDir[160];
+   char shiftDir[160];
+   char name[256];
+   // XY correction variables
+   double CentreX_1[MAX_POINTS], CentreY_1[MAX_POINTS];
+   double CentreX_2[MAX_POINTS], CentreY_2[MAX_POINTS];
+   double Xsurf, Ysurf, Zsurf, Zsurfshift, Zshift;
+   int numPoints_1, numPoints_2, n, ncount;
+   ncount = 0; // Initialize counter
+
+   //// Make directories for data storage
+   // Get the current date
+   dw = Get_Date();
+   year = HIWORD(dw);
+   month = HIBYTE(LOWORD(dw));
+   day = LOBYTE(LOWORD(dw));
+   // Main folder (date) -- e.g. J:\Hasreet\XY Correction\20260227\
+   strcpy(folder, "J:\\Hasreet\\XY Correction\\");
+   sprintf(yearStr, "%04d", year);
+   strcat(folder, yearStr);
+   sprintf(monthStr, "%02d", month);
+   strcat(folder, monthStr);
+   sprintf(dayStr, "%02d", day);
+   strcat(folder, dayStr);
+   strcat(folder, "\\");  // Add trailing backslash
+   strcpy(basePath, folder);
+   MakeDirectory(basePath);
+   // Subfolders
+   strcpy(surfaceDir, basePath);
+   strcat(surfaceDir, "Surface\\");
+   MakeDirectory(surfaceDir);
+   strcpy(baseDir, basePath);
+   strcat(baseDir, "Base\\");
+   MakeDirectory(baseDir);
+   strcpy(shiftDir, basePath);
+   strcat(shiftDir, "BeadsShift\\");
+   MakeDirectory(shiftDir);
+
+   // Initial capture: a single bead snapshot before the loop starts,
+   // saved as "Shift_0", so there's a baseline image even for cycle 1.
+   Capture(); // No Autofocus
+   MakeFilename("BeadsShift\\", "Shift_", ncount, name);
+   ImageSaveAs(name, 3, 1);
+
+   //// Time loop
+   for(n = 0; n < REPEAT_COUNT; n = n + 1)
+      {
+
+      ncount = n + 1;
+
+      //// PART 1: BASE
+      // Record XYZ position at surface -- the position to return to
+      // after the (autofocusing) Base experiment potentially moves
+      // stage/focus around.
+      StgGetPosXY(&Xsurf, &Ysurf);
+      StgGetAbsPosZ(&Zsurf);
+
+      // Measure objects function for first image: "before" bead
+      // positions, used as the reference to compare against once we're
+      // back from the Base acquisition.
+      numPoints_1 = ObjectPositions(CentreX_1, CentreY_1);
+
+      // Capture and save Z-stack at base
+      ND_LoadExperiment("Vc_Timelapse_Base488640_Small"); // Uses Autofocus, Z-stack, Multipoint position (X, Y, Z), 2 channels, Large image
+      ND_RunExperiment(1); // ~10 minutes
+      MakeFilename("Base\\", "Base_", ncount, name);
+      ImageSaveAs(name, 3, 1);
+
+      // Back to last XYZ position for surface, then refocus (no-laser
+      // autofocus) since the long Base run can leave focus drifted.
+      StgMoveXY(Xsurf, Ysurf, 0);
+      StgMoveZ(Zsurf, 0);
+      ND_LoadExperiment("Focus_NoLaser");
+      ND_RunExperiment(1); // Adjust Z with Autofocus
+      CloseCurrentDocument(2);
+
+      // Second image object calculations and move stage function:
+      // "after" bead positions, then compute the median before/after
+      // bead shift and move the stage to correct for it before Part 2.
+      numPoints_2 = ObjectPositions(CentreX_2, CentreY_2);
+      ComputeMedianShift(CentreX_1, CentreY_1, numPoints_1,
+                         CentreX_2, CentreY_2, numPoints_2);
+
+      //// PART 2: SURFACE
+      // Record XY position at surface -- same before/after bead
+      // correction pattern as Part 1, now around the Surface experiment.
+      StgGetPosXY(&Xsurf, &Ysurf);
+      StgGetAbsPosZ(&Zsurf);
+
+      // Measure objects function for first image: "before" bead
+      // positions for this half of the cycle, plus a saved snapshot
+      // ("Shift_1_...") for manual review of the pre-Surface bead field.
+      numPoints_1 = ObjectPositions(CentreX_1, CentreY_1);
+      Capture(); // No Autofocus
+      MakeFilename("BeadsShift\\", "Shift_1_", ncount, name);
+      ImageSaveAs(name, 3, 1);
+
+      // Capture and save Z-stack at surface
+      ND_LoadExperiment("Vc_Timelapse_Surf488640_Small"); // Uses Autofocus, Z-stack, 2 channels, Large image
+      ND_RunExperiment(1); // ~10 minutes
+      MakeFilename("Surface\\", "Surf_", ncount, name);
+      ImageSaveAs(name, 3, 1);
+
+      // Back to last XYZ position for surface, then refocus.
+      StgMoveXY(Xsurf, Ysurf, 0);
+      StgMoveZ(Zsurf, 0);
+      ND_LoadExperiment("Focus_NoLaser");
+      ND_RunExperiment(1); // Adjust Z with Autofocus
+      CloseCurrentDocument(2);
+
+      // Second image object calculations and move stage function:
+      // "after" bead positions, median shift computed and applied so
+      // drift doesn't carry into the next cycle's Part 1.
+      numPoints_2 = ObjectPositions(CentreX_2, CentreY_2);
+      ComputeMedianShift(CentreX_1, CentreY_1, numPoints_1,
+                         CentreX_2, CentreY_2, numPoints_2);
+
+      // Capture shifted beads image: "after correction" snapshot
+      // ("Shift_2_...") so the before/during/after bead fields for this
+      // cycle can all be reviewed later.
+      Capture(); // No Autofocus
+      MakeFilename("BeadsShift\\", "Shift_2_", ncount, name);
+      ImageSaveAs(name, 3, 1);
+
+      // Close captures before starting next loop iteration
+      CloseAllDocuments(2);
+
+      }
+
+return 0;
+}
+
+//// First function
+// Detects fluorescent bead candidates in the current field of view and
+// returns their centroid positions in CentreX/CentreY (caller-supplied
+// arrays, filled in place). Captures on the 561 SoRa configuration,
+// thresholds by intensity, restricts detected objects by size (rejects
+// anything outside 0.8-3.5, filtering out non-bead debris/large
+// clusters) with no circularity restriction, then measures each
+// surviving object's centroid. If fewer than 2 beads are found, assumes
+// the field went out of focus and retries once after a no-laser
+// autofocus pass before giving up and returning whatever it found.
+int ObjectPositions(double *CentreX, double *CentreY)
+   {
+   int numPoints;
+   char buffer[100];
+   numPoints = 0;  // Ensure initialization
+
+   CloseAllDocuments(2);
+   SelectOptConf("1X SoRa 561");
+   Capture();
+   DefineThresholdIntGa3(105.000000, 1000000000.000000);
+   DefineThresholdRestrictionSizeGa3(0.800000, 3.5);
+   DefineThresholdRestrictionCircularityGa3(0.000000, 1.000000);
+
+   ThresholdGa3(15);
+
+   ResetObjectFeatures();
+   SelectObjectFeature("CentreX");
+   SelectObjectFeature("CentreY");
+   MeasureObjects();
+
+   numPoints = Get_NumObjects(-1, 0);  // Get number of detected objects
+
+   if(numPoints < 2)
+      {
+      // Too few beads to compute a reliable shift later -- refocus and
+      // try the exact same capture/threshold/measure sequence once more.
+      //ND_LoadExperiment("Focus561_M9");
+      ND_LoadExperiment("Focus_NoLaser");
+      //ND_LoadExperiment("Focus561");
+      ND_RunExperiment(1); // Adjust Z with Autofocus
+      CloseCurrentDocument(2);
+
+      SelectOptConf("1X SoRa 561");
+      Capture();
+      DefineThresholdIntGa3(105.000000, 1000000000.000000);
+      DefineThresholdRestrictionSizeGa3(0.800000, 3.5);
+      DefineThresholdRestrictionCircularityGa3(0.000000, 1.000000);
+      ThresholdGa3(15);
+
+      ResetObjectFeatures();
+      SelectObjectFeature("CentreX");
+      SelectObjectFeature("CentreY");
+      MeasureObjects();
+
+      numPoints = Get_NumObjects(-1, 0);  // Get number of detected objects
+      }
+
+   Get_ObjectFeatureData("CentreX", CentreX, -1, 0);  // Update CentreX in main()
+   Get_ObjectFeatureData("CentreY", CentreY, -1, 0);  // Update CentreY in main()
+
+   // Brief on-screen readout of how many beads were found, for the
+   // operator to sanity-check while the loop runs unattended.
+   sprintf(buffer, "Number of beads: %d", numPoints);
+   Int_CreateTextWindow(buffer, 0, RGB(0,0,128), RGB_WHITE, 100);
+   Wait(2);
+   Int_CloseTextWindow();
+
+   return numPoints;  // Return the number of detected objects
+   }
+
+
+//// Second function
+// Matches beads between two snapshots (before: CentreX_1/Y_1, after:
+// CentreX_2/Y_2) by pairwise distance, keeping every pair closer than
+// MAX_DIST apart as a candidate "same bead" match, then takes the MEDIAN
+// X and median Y displacement across all matches as the overall drift
+// estimate (median is robust to any spurious/mismatched pairs). Moves
+// the stage by that amount to cancel the drift, updates the global
+// medianX/medianY, and displays both values briefly for the operator.
+// Y is negated in the stage move because the image Y-axis and the
+// stage's physical Y-axis run in opposite directions on this system.
+ int ComputeMedianShift(double *CentreX_1, double *CentreY_1, int numPoints_1,
+                       double *CentreX_2, double *CentreY_2, int numPoints_2)
+   {
+   double XShifts[MAX_PAIRS], YShifts[MAX_PAIRS];
+   double dx, dy, distance;
+   int shiftCount, i, j;
+   char buffer[100];
+   shiftCount = 0;  // Ensure initialization
+
+   // Compute pairwise distances and store shifts where distance < MAX_DIST
+   for(i = 0; i < numPoints_1; i = i + 1)
+      {
+      for(j = 0; j < numPoints_2; j = j + 1)
+         {
+         dx = CentreX_1[i] - CentreX_2[j];
+         dy = CentreY_1[i] - CentreY_2[j];
+         distance = sqrt(dx * dx + dy * dy);
+
+         if(distance < MAX_DIST)
+            {
+            XShifts[shiftCount] = dx;
+            YShifts[shiftCount] = dy;
+            shiftCount = shiftCount + 1;
+            }
+         }
+      }
+
+   if(shiftCount > 0)
+      {
+      SortArrayDbl(XShifts, shiftCount);
+      SortArrayDbl(YShifts, shiftCount);
+
+      if(shiftCount % 2 == 0)
+         {
+         medianX = (XShifts[shiftCount / 2 - 1] + XShifts[shiftCount / 2]) / 2.0;
+         medianY = (YShifts[shiftCount / 2 - 1] + YShifts[shiftCount / 2]) / 2.0;
+         }
+      else
+         {
+         medianX = XShifts[shiftCount / 2];
+         medianY = YShifts[shiftCount / 2];
+         }
+      }
+   else
+      {
+      // No bead pairs matched within MAX_DIST (e.g. no beads detected in
+      // one of the two snapshots) -- default to no correction rather
+      // than guessing.
+      medianX = 0;
+      medianY = 0;
+      }
+
+   // Move stage according to computed shift
+   StgMoveXY(medianX, -medianY, 1);
+
+   // Report the applied correction to the operator.
+   sprintf(buffer, "Stage Moved by Median X Shift: %.3f", medianX);
+   Int_CreateTextWindow(buffer, 0, RGB(0,0,128), RGB_WHITE, 100);
+   Wait(2);
+
+   sprintf(buffer, "Stage Moved by Median Y Shift: %.3f", medianY);
+   Int_CreateTextWindow(buffer, 0, RGB(0,0,128), RGB_WHITE, 100);
+   Wait(2);
+   Int_CloseTextWindow();
+
+   return 1;
+   }
+
+//// Third function
+// Builds a full output path/filename under today's date-stamped
+// basePath (set once in main()): basePath + subfolder + label + count +
+// ".nd2" -- e.g. "...\20260227\Base\Base_3.nd2". Centralizing this here
+// keeps the numbering/extension convention consistent across every save
+// call in main().
+int MakeFilename(char *subfolder, char *label, int count, char *output)
+{
+   char number[16];
+
+   // Start building the output string
+   strcpy(output, basePath);     // Use global path from Get_Date()
+   strcat(output, subfolder);     // Add subfolder (e.g., "Surface\\")
+   strcat(output, label);        // Add label ("Surf_", etc.)
+   sprintf(number, "%d", count); // Convert number to string
+   strcat(output, number);
+   strcat(output, ".nd2");
+
+   return 1;
+}
